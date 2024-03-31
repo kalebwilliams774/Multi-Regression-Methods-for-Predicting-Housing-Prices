@@ -1,0 +1,594 @@
+---
+title: "Housing Price Prediction Using OLR, LASSO and Ridge Regression Models"
+author: "Kaleb Williams, Wakar Mulk, Micheal Ahana"
+date: "2024-03-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+\section*{OLS}
+
+For our predictions we shall predict the average home price in vancouver based of various predictors using lasso, ridge and regular linear regression. This can also be partioned into average price oh homes with "blank" bedrooms for example for a more in depth analysis.
+
+```{r}
+data <- read.csv('Housing.csv')
+```
+Data is a little messy will have to convert all of the yes, no answers for predictors such that they are binary 0,1. Therefore for a yes reply 1 will be attributed and for a no answer 0 will be attributed.
+
+Ultimately we wish to predict the housing price using predictors from the data set. The area of the home, number of bedrooms, bathrooms, if there is air conditioning, if there is hot water heating, parking and if there is a basement will be chosen as predictors for the regressions. As these will likely impact the price of the home the most.
+
+Price and area are continuous variables while number of bedrooms/bathrooms and parking are categorical so we should find out the min/max number of each.
+
+```{r}
+#Finding the min/max number of bedrooms, bathrooms and parking spots
+
+max(data$bedrooms)
+
+max(data$bathrooms)
+
+max(data$parking)
+
+min(data$bedrooms)
+
+min(data$bathrooms)
+
+min(data$parking)
+```
+Therefore the number of bedrooms is categorical with values 1:6, number of bathrooms is categorical with values 1:4 and number of parking spots is categorical with values 0:3.
+
+
+```{r}
+#Extracting necessary columns from data
+
+extracted_columns <- data.frame("Price"=c(data$price),
+                                "Area" = c(data$area),
+                                "Bedroom" = c(data$bedrooms),
+                                "Bathroom" = c(data$bathrooms),
+                                "HotWater"=c(data$hotwaterheating),
+                                "Air"=c(data$airconditioning),
+                                "Parking"=c(data$parking))
+```
+
+```{r}
+#Converting yes/no answers into binary responses
+
+extracted_columns$HotWater = ifelse(extracted_columns$HotWater == "yes",1,0)
+
+extracted_columns$Air = ifelse(extracted_columns$Air == "yes",1,0)
+```
+Since the data is scaled quite differently for price and area we should standardize the variables. Before standardizing we will save the dataframe.
+
+```{r}
+#Saving data frame
+
+original_data <- extracted_columns
+```
+
+```{r}
+#Standardizing the Price and Area variables
+
+extracted_columns$Price <- scale(extracted_columns$Price) 
+
+extracted_columns$Area <- scale(extracted_columns$Area) 
+
+head(extracted_columns)
+```
+
+We will use the caret package to partition the data randomly into 80% training set and 20% testing set.
+```{r,message=FALSE,warning=FALSE}
+library(caret)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Split the dataframe into train and test sets
+train_indices <- createDataPartition(extracted_columns$Price, p = 0.8, list = FALSE)
+train_data <- extracted_columns[train_indices, ]
+test_data <- extracted_columns[-train_indices, ]
+
+# Show the sizes of train and test sets
+cat("Training set size:", nrow(train_data), "\n")
+cat("Testing set size:", nrow(test_data), "\n")
+```
+Now that we have the training and test data we can apply a simple linear regression to the data using all the predictors chosen.
+
+```{r}
+#Training a basic linear regression model
+
+linreg_model <- lm(Price ~.,data=train_data)
+
+summary(linreg_model)
+```
+
+From the summary we can see that each of the predictors is greatly significant in to the price response. Now to make predictions with this model.
+
+```{r}
+#Predicting using the test data
+
+OLR_prediction <- predict(linreg_model,newdata=test_data)
+
+head(OLR_prediction)
+```
+```{r}
+#Calculating accuracy metrics
+
+data.frame(
+  RMSE = RMSE(OLR_prediction, test_data$Price),
+  Rsquare = R2(OLR_prediction,test_data$Price),
+  MAE = MAE(OLR_prediction,test_data$Price)
+)
+```
+Overall very low error for the predictive model on the test data.
+
+Now we can use 10-fold cross validation in order to determine best possible splitting of the data using the caret package once again.
+
+```{r}
+#10 fold cross validation
+library(caret)
+
+set.seed(1234)
+
+model1 <- train(
+  Price~.,data=extracted_columns,method='pcr',
+  scale =TRUE,
+  trControl = trainControl(method='cv',number =10),
+  tuneLength=10
+)
+
+model1$resample
+```
+```{r}
+plot(model1)
+```
+This plot tells us that choosing 5 principle components (regressors) will yield the lowest RMSE value for the regression.
+
+```{r}
+#Making predictions using this best model
+
+cv_predictions <- model1 |>
+  predict(test_data)
+
+OLR_accuracy <- data.frame(
+  RMSE =RMSE(cv_predictions,test_data$Price),
+  Rsquare = R2(cv_predictions,test_data$Price),
+  MAE = MAE(cv_predictions,test_data$Price)
+)
+
+```
+RMSE from the original model is 0.6653989	and the RMSE from the 10 fold cross validated model is 0.6630291. Slightly better but not by much at all, showing the original model was quite accurate in predicting the Vancouver housing prices.
+
+\section*{LASSO}
+
+Least absolute selection and shrinkage operator (LASSO) is an updated regression applying an additive term to the regular least squares estimate for the parameters of the regression and as before of ordinary least squares minimizing its cost function. Mathematically defined as 
+
+\begin{equation}
+\begin{gathered}
+\displaystyle \sum_{i=1}^{n}\left(y_i-\sum_{j=1}^n\beta_o+\beta_1x_1+\beta_2x_2+\dots\beta_px_p\right)^2+\lambda\sum_{j=1}^n\beta_j^2.
+\end{gathered}
+\end{equation}
+
+The penalty is calculated as the Manhatten distance which is defined as 
+
+\begin{equation}
+\begin{gathered}
+d(\mathbf{X},\mathbf{Y}) = |x_1-x_2| + |y_1-y_2|
+\end{gathered}
+\end{equation}
+
+It involves finding the optimal value of lambda to scale the parameters to optimal solutions. That is it applies a penalty to the parameters that are too small and applies nothing to the parameters that are within optimal range. This encourages sparsity in the model. Sparsity, many of the coefficents are equal to zero, is desirable for many reasons.
+
+Feature Selection: When many coefficients are zero, it indicates that the corresponding predictors (features) have little to no influence on the response variable. This effectively performs feature selection, simplifying the model by removing irrelevant or redundant predictors.
+
+Interpretability: A sparse model is easier to interpret because it focuses only on a subset of predictors that have significant impact on the response variable. With fewer predictors to consider, it's easier to understand the relationships between predictors and the response.
+
+Reduced Overfitting: Sparsity helps prevent overfitting, where the model captures noise in the training data rather than the underlying patterns. By reducing the number of predictors, sparse models are less likely to overfit and generalize better to unseen data.
+
+Computational Efficiency: Sparse models with fewer nonzero coefficients require less computational resources for both training and inference. This makes sparse models particularly useful for large-scale datasets and real-time applications where efficiency is important.
+
+Improved Stability: Sparse models tend to be more stable because they rely on fewer predictors, which reduces the impact of small changes in the data or slight variations in the training process.
+
+Ultimately we want to find the optimal value of $\lambda$ that reduces the redundant predictors to zero or having very little impact on the model. This is typically done through cross validation.LASSO can be performed using the glmnet package. For LASSO we will use all variables contained within the data set.
+
+We will now need to clean all the data applying the same binary rule as stated in the OLR section. The only thing that will differ is the furnishingstatus column we shall also apply a categorical conversion to this variable. 2 for furnished, 1 for semi-furnished and 0 for unfurnished.
+
+```{r}
+#Cleaning data for LASSO
+
+LASSO_data <- data.frame("Price"=c(data$price),
+"Area" =c(data$area),
+"Bedroom" = c(data$bedrooms),
+"Bathroom" = c(data$bathrooms),
+"Stories" = c(data$stories),
+"Main" = c(data$mainroad),
+"Guest" = c(data$guestroom),
+"Basement" = c(data$basement),
+"HotWater"=c(data$hotwaterheating),                 "Air"=c(data$airconditioning),
+"Parking"=c(data$parking),
+"Pre"=c(data$prefarea),
+"Furnished"=c(data$furnishingstatus))
+```
+
+```{r}
+#Converting all binary and categorical variables
+LASSO_data$Main  = ifelse(LASSO_data$Main == "yes",1,0)
+
+LASSO_data$Guest = ifelse(LASSO_data$Guest == "yes",1,0)
+
+LASSO_data$Basement  = ifelse(LASSO_data$Basement == "yes",1,0)
+
+LASSO_data$HotWater  = ifelse(LASSO_data$HotWater == "yes",1,0)
+
+LASSO_data$Air  = ifelse(LASSO_data$Air == "yes",1,0)
+
+LASSO_data$Pre = ifelse(LASSO_data$Pre == "yes",1,0)
+
+LASSO_data$Furnished = ifelse(LASSO_data$Furnished == "furnished", 2,
+                              ifelse(LASSO_data$Furnished == "semi-furnished", 1, 0))
+```
+
+```{r}
+#Showing converted data frame
+head(LASSO_data)
+```
+Now to apply LASSO we must create a linear regression will all variables as predictors. Just like with OLR we shall standardize the price and area columns.
+```{r}
+#Standardizing the price and area columns 
+
+LASSO_data$Price <- scale(LASSO_data$Price) 
+
+LASSO_data$Area <- scale(LASSO_data$Area) 
+
+head(LASSO_data)
+```
+Now we must split the data once again into training and testing using the caret package.
+```{r}
+library(caret)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Split the dataframe into train and test sets
+train_indices <- createDataPartition(LASSO_data$Price, p = 0.8, list = FALSE)
+LASSO_train_data <- LASSO_data[train_indices, ]
+LASSO_test_data <- LASSO_data[-train_indices, ]
+
+# Show the sizes of train and test sets
+cat("Training set size:", nrow(LASSO_train_data), "\n")
+cat("Testing set size:", nrow(LASSO_test_data), "\n")
+```
+
+```{r}
+#Creating matrix for training data to create LASSO model
+
+#Training data
+x1 = as.matrix(LASSO_train_data[,2:13])
+y1 = as.matrix(LASSO_train_data[,1])
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+#Applying LASSO regression to the data
+
+library(glmnet)
+
+png('LASSOlambda.png')
+LASSO_train_model = cv.glmnet(x1,y1,alpha=1,family="gaussian")
+plot(LASSO_train_model)
+```
+Therefore small values of $\lambda$ will be preferable for the LASSO regression.
+```{r}
+#Finding minimum \lambda 
+
+LASSO_train_model$lambda.min
+```
+Now to make predictions with the LASSO model and the training data.
+```{r}
+#Test data matrix 
+
+x2 = as.matrix(LASSO_test_data[,2:13])
+
+LASSO_predictions <- predict(LASSO_train_model, newx = x2)
+```
+
+```{r}
+#Calculating accuracy metrics
+
+LASSO_accuracy <- data.frame(
+  RMSE = RMSE(LASSO_predictions, LASSO_test_data$Price),
+  Rsquare = R2(LASSO_predictions,LASSO_test_data$Price),
+  MAE = MAE(LASSO_predictions,LASSO_test_data$Price)
+)
+
+LASSO_accuracy
+```
+\section*{Ridge}
+
+Ridge regression is essentially the same as LASSO except for that instead of using the Manhattan distance for the computation of the penalty, it using the standard Euclidean distance.
+
+\begin{equation}
+\begin{gathered}
+d(\mathbf{X},\mathbf{y}) = \sqrt{(x_1-x_2)^2+(y_1-y_2)^2}
+\end{gathered}
+\end{equation}
+
+The exact same methodology and reasoning apply to Ridge as LASSO and again can be calculated using the glmnet package.
+
+Since ridge requires all the data as regressors we can relabel the variables from the LASSO portion.We only need the training and testing portions of the data.
+
+```{r}
+#Relabeling LASSO training and test data
+
+#Training
+x1_ridge = x1 
+y1_ridge = y1
+
+#Testing 
+x2_ridge = x2 
+```
+
+```{r}
+#Creating linear model using the test data
+
+library(glmnet)
+
+png('Ridgelambda.png')
+ridge_train_model = cv.glmnet(x1_ridge,y1_ridge,alpha=0,family="gaussian",nlamnda=1e2)
+plot(ridge_train_model)
+```
+Somewhat similar results to LASSO.
+```{r}
+#Optimal lambda value
+
+ridge_train_model$lambda.min
+```
+Much larger value of $\lambda$ then LASSO regression.
+
+Now to make our ridge predictions.
+
+```{r}
+#Ridge predictions
+
+ridge_predictions <- predict(ridge_train_model, newx = x2_ridge)
+```
+
+```{r}
+#Calculating accuracy metrics
+
+Ridge_accuracy <- data.frame(
+  RMSE = RMSE(ridge_predictions, LASSO_test_data$Price),
+  Rsquare = R2(ridge_predictions,LASSO_test_data$Price),
+  MAE = MAE(ridge_predictions,LASSO_test_data$Price)
+)
+
+Ridge_accuracy
+```
+
+```{r}
+#Comparing accuracies 
+
+acc_df <- data.frame( OLR = OLR_accuracy, LASSO = LASSO_accuracy, Ridge = Ridge_accuracy)
+
+acc_df
+
+```
+
+Although very close in value LASSO produces the greatest results for accuracy for all RMSE and MAE.
+
+Now we wish to apply same methods and see if we can get similar results in predicting housing price.This data set will be used for predicting the mean housing price in california.
+```{r}
+#Importing California housing prices 
+
+cal_data <- read.csv('cal_housing.csv')
+```
+
+```{r}
+head(cal_data)
+```
+
+```{r}
+#Checking for null values
+
+sum(is.na(cal_data))
+```
+
+```{r}
+#Removing NA values
+
+cal_data <-na.omit(cal_data)
+
+sum(is.na(cal_data))
+```
+
+```{r}
+#Confirming the correct decision to omit the longitude and latitude columns
+
+#Splitting into predictors and response
+
+summary(lm(median_house_value ~.,data=cal_data))
+```
+All variables demonstrate significance in the regression to predict the median housing price therefore they will all be required within our OLR  prediction.
+
+The variable that demonstrates the proximity to the ocean will need to be changed into a categorical variable
+```{r}
+#Checking all occurrences of the variables in proximity to ocean column
+
+unique(cal_data$ocean_proximity)
+```
+Therefore we will change the "NEAR BAY" variable to 1, "<1H OCEAN" to 2, "INLAND" to 3, "NEAR OCEAN" ton 4 and "ISLAND" to 5.
+
+```{r}
+#Changing ocean_proximity variable to categorical.
+
+cal_data$ocean_proximity <- ifelse(cal_data$ocean_proximity == 'NEAR BAY', 1,
+                              ifelse(cal_data$ocean_proximity == '<1H OCEAN', 2,
+                              ifelse(cal_data$ocean_proximity == 'INLAND', 3,
+                              ifelse(cal_data$ocean_proximity == 'NEAR OCEAN', 4, 5))))
+```
+
+Standardization will need to be applied for some of the variables as they vary quite drastically in value. This will be done again using z-score standardization as it will give us low variance in the data and a centralized mean.
+```{r}
+#Standardizing data frame
+
+cal_scaled <- as.data.frame(scale(cal_data))
+
+cal_df<-as.data.frame(scale(cal_data))
+
+head(cal_df)
+```
+
+```{r,warning=FALSE}
+#Splitting data into test and train
+
+library(caret)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Split the dataframe into train and test sets
+train_indices <- createDataPartition(cal_df$median_house_value, p = 0.8, list = FALSE)
+cal_train_data <- cal_df[train_indices, ]
+cal_test_data <- cal_df[-train_indices, ]
+
+# Show the sizes of train and test sets
+cat("Training set size:", nrow(cal_train_data), "\n")
+cat("Testing set size:", nrow(cal_test_data), "\n")
+```
+
+```{r}
+#Applying OLS model to training data
+
+cal_OLS <- lm(median_house_value~.,data=cal_train_data)
+
+summary(cal_OLS)
+```
+
+```{r}
+#Making predictions for OLS
+
+cal_OLS_predictions <- predict(cal_OLS,newdata=cal_test_data)
+```
+
+```{r}
+#Calculating accuracy metrics
+
+cal_OLR_accuracy <- data.frame(
+  RMSE =RMSE(cal_OLS_predictions,cal_test_data$median_house_value),
+  Rsquare = R2(cal_OLS_predictions,cal_test_data$median_house_value),
+  MAE = MAE(cal_OLS_predictions,cal_test_data$median_house_value)
+)
+
+cal_OLR_accuracy
+```
+Quite low RMSE.
+
+Now to complete LASSO.
+
+```{r}
+#Creating matrix for training data to create LASSO model
+
+#Training data
+x1 = as.matrix(cal_train_data[,-9])
+y1 = as.matrix(cal_train_data[,9])
+```
+
+
+```{r,warning=FALSE}
+#Applying LASSO regression to the data
+
+library(glmnet)
+
+png('CalLASSOlambda.png')
+cal_LASSO_train_model = cv.glmnet(x1,y1,alpha=1,family="gaussian")
+plot(cal_LASSO_train_model)
+```
+Therefore small values of $\lambda$ will be preferable for the LASSO regression.
+```{r}
+#Finding minimum \lambda 
+
+cal_LASSO_train_model$lambda.min
+```
+Now to make predictions with the LASSO model and the training data.
+```{r}
+#Test data matrix 
+
+x2 = as.matrix(cal_test_data[,-9])
+
+cal_LASSO_predictions <- predict(cal_LASSO_train_model, newx = x2)
+```
+
+```{r}
+#Calculating accuracy metrics
+
+cal_LASSO_accuracy <- data.frame(
+  RMSE = RMSE(cal_LASSO_predictions, cal_test_data$median_house_value),
+  Rsquare = R2(cal_LASSO_predictions,cal_test_data$median_house_value),
+  MAE = MAE(cal_LASSO_predictions,cal_test_data$median_house_value)
+)
+
+cal_LASSO_accuracy
+```
+Higher RMSE then OLS with all explanatory variables as predictors.
+
+Now to apply ridge.
+
+```{r}
+#Relabeling LASSO training and test data
+
+#Training
+x1_ridge = x1 
+y1_ridge = y1
+
+#Testing 
+x2_ridge = x2 
+```
+
+```{r}
+#Creating linear model using the test data
+
+library(glmnet)
+
+png('CalRidgeLambda.png')
+cal_ridge_train_model = cv.glmnet(x1_ridge,y1_ridge,alpha=0,family="gaussian",nlamnda=1e2)
+plot(cal_ridge_train_model)
+```
+Somewhat similar results to LASSO.
+```{r}
+#Optimal lambda value
+
+ridge_train_model$lambda.min
+```
+Much larger value of $\lambda$ then LASSO regression.
+
+Now to make our ridge predictions.
+
+```{r}
+#Ridge predictions
+
+cal_ridge_predictions <- predict(cal_ridge_train_model, newx = x2_ridge)
+```
+
+```{r}
+#Calculating accuracy metrics
+
+Ridge_accuracy <- data.frame(
+  RMSE = RMSE(cal_ridge_predictions, cal_test_data$median_house_value),
+  Rsquare = R2(cal_ridge_predictions,cal_test_data$median_house_value),
+  MAE = MAE(ridge_predictions,cal_test_data$median_house_value)
+)
+
+Ridge_accuracy
+```
+Highest RMSE over LASSO and OLR.
+
+```{r}
+#Histogram of housing price
+
+png('Histograms.png')
+par(mfrow=c(1,2))
+
+hist(cal_data$median_house_value,main='Distribution of California Data',
+     xlab='Meidan House Price')
+hist(original_data$Price,main='Distribution of Unknown Data',
+     xlab='House Price')
+```
